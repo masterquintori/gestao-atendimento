@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gestão de Atendimento — Registro de Imóveis</title>
+<style>
+/* ── TOKENS ─────────────────────────────────────────── */
+:root {
+  --bg:        #F2F1EE;
+  --surface:   #FFFFFF;
+  --surface2:  #ECEAE6;
+  --border:    #D8D5CF;
+  --text:      #18180F;
+  --text2:     #6B6960;
+  --text3:     #9E9B94;
+  --accent:    #1B4F8A;
+  --accent-lt: #EBF1F9;
+  --ok:        #2D7D46;
+  --ok-bg:     #E6F4EA;
+  --warn:      #9A5A00;
+  --warn-bg:   #FFF3E0;
+  --alert:     #B3261E;
+  --alert-bg:  #FDECEA;
+  --radius:    8px;
+  --font:      'Inter', system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
+
+/* ── LAYOUT ─────────────────────────────────────────── */
+.app { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+header { margin-bottom: 1.5rem; }
+header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+header p  { font-size: 13px; color: var(--text2); margin-top: 3px; }
+
+/* ── CARDS ──────────────────────────────────────────── */
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 1.5rem; }
+.kpi { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.kpi-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+.kpi-val   { font-size: 26px; font-weight: 600; line-height: 1; }
+.kpi-sub   { font-size: 11px; color: var(--text3); margin-top: 4px; }
+.kpi.ok    { border-color: var(--ok);    background: var(--ok-bg); }
+.kpi.warn  { border-color: var(--warn);  background: var(--warn-bg); }
+.kpi.alert { border-color: var(--alert); background: var(--alert-bg); }
+
+/* ── TABS ───────────────────────────────────────────── */
+.tabs { display: flex; gap: 4px; margin-bottom: 1rem; border-bottom: 1.5px solid var(--border); padding-bottom: 0; flex-wrap: wrap; }
+.tab  { padding: 7px 16px; font-size: 13px; font-weight: 500; cursor: pointer; background: transparent; border: none; color: var(--text2); border-bottom: 2px solid transparent; margin-bottom: -1.5px; transition: color .15s; }
+.tab:hover  { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* ── SECTION ────────────────────────────────────────── */
+.section { margin-bottom: 1.5rem; }
+.section-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.section-title { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ── TABLE ──────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { font-size: 11px; font-weight: 600; color: var(--text2); text-align: left; padding: 9px 12px; background: var(--surface2); border-bottom: 0.5px solid var(--border); white-space: nowrap; }
+td { padding: 8px 12px; border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #fafaf8; }
+
+/* ── BADGES ─────────────────────────────────────────── */
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.badge.ok    { background: var(--ok-bg);    color: var(--ok); }
+.badge.warn  { background: var(--warn-bg);  color: var(--warn); }
+.badge.alert { background: var(--alert-bg); color: var(--alert); }
+.badge.info  { background: var(--accent-lt); color: var(--accent); }
+
+/* ── BAR ────────────────────────────────────────────── */
+.bar-wrap { display: flex; align-items: center; gap: 8px; }
+.bar-bg { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; min-width: 50px; }
+.bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s; }
+.bar-fill.peak  { background: #D85A30; }
+.bar-fill.ok    { background: var(--ok); }
+
+/* ── SLIDER ─────────────────────────────────────────── */
+.control-row { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.control-row label { font-size: 13px; color: var(--text2); font-weight: 500; }
+.control-row input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+.control-val { font-size: 14px; font-weight: 600; color: var(--accent); min-width: 55px; }
+.control-hint { font-size: 12px; color: var(--text3); width: 100%; }
+
+/* ── GLOSSARY ───────────────────────────────────────── */
+.glossary { margin-top: 1.5rem; background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.glossary h3 { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
+.gloss-item { margin-bottom: 10px; }
+.gloss-term { font-size: 13px; font-weight: 600; color: var(--text); }
+.gloss-def  { font-size: 13px; color: var(--text2); margin-top: 2px; line-height: 1.5; }
+
+/* ── STATUS BAR ─────────────────────────────────────── */
+.status-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); margin-bottom: 1rem; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+.status-dot.loading { background: var(--warn); animation: pulse 1s infinite; }
+.status-dot.error   { background: var(--alert); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── CAPACITY METER ─────────────────────────────────── */
+.cap-meter { display: flex; align-items: center; gap: 6px; }
+.cap-bar { flex:1; height: 10px; background: var(--surface2); border-radius: 5px; overflow: hidden; min-width: 60px; }
+.cap-fill { height: 100%; border-radius: 5px; transition: width .3s; }
+.cap-pct { font-size: 11px; font-weight: 600; min-width: 38px; }
+
+/* ── NOTE ───────────────────────────────────────────── */
+.note { font-size: 12px; color: var(--text2); background: var(--surface2); border-radius: var(--radius); padding: 10px 14px; margin-top: 10px; line-height: 1.6; }
+.note strong { color: var(--text); }
+
+/* ── LOADING ────────────────────────────────────────── */
+#loading-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 999; }
+.spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+  .kpi-row { grid-template-columns: 1fr 1fr; }
+  .app { padding: 1rem .75rem 2rem; }
+}
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <span style="font-size:13px;color:var(--text2)">Carregando dados da planilha…</span>
+</div>
+
+<div class="app">
+  <header>
+    <h1>Gestão de Atendimento — Registro de Imóveis</h1>
+    <p>Painel do líder de atendimento · Monitoramento de demanda e capacidade</p>
+  </header>
+
+  <div class="status-bar">
+    <div class="status-dot loading" id="status-dot"></div>
+    <span id="status-text">Conectando à planilha…</span>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-row" id="kpi-row">
+    <div class="kpi"><div class="kpi-label">Atendentes ativos</div><div class="kpi-val" id="kpi-atend">—</div><div class="kpi-sub">com ≥ 12 senhas/dia</div></div>
+    <div class="kpi"><div class="kpi-label">Média senhas/dia/atendente</div><div class="kpi-val" id="kpi-media">—</div><div class="kpi-sub">base histórica</div></div>
+    <div class="kpi"><div class="kpi-label">Capacidade total/hora</div><div class="kpi-val" id="kpi-cap-hora">—</div><div class="kpi-sub">senhas que a equipe processa</div></div>
+    <div class="kpi"><div class="kpi-label">Demanda pico (11h–12h)</div><div class="kpi-val">12,6</div><div class="kpi-sub">senhas/hora histórico</div></div>
+    <div class="kpi" id="kpi-status"><div class="kpi-label">Status da equipe</div><div class="kpi-val" id="kpi-status-val">—</div><div class="kpi-sub" id="kpi-status-sub"></div></div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('dim')">📊 Dimensionamento</button>
+    <button class="tab" onclick="showTab('atend')">👤 Atendentes</button>
+    <button class="tab" onclick="showTab('demanda')">📈 Demanda por hora</button>
+    <button class="tab" onclick="showTab('servicos')">🗂️ Por serviço</button>
+    <button class="tab" onclick="showTab('glossario')">📖 Glossário</button>
+  </div>
+
+  <!-- ═══ PAINEL 1: DIMENSIONAMENTO ═══ -->
+  <div id="dim" class="panel active">
+    <div class="section">
+      <div class="section-head"><span class="section-title">Quantos atendentes são necessários por hora?</span></div>
+      <div class="control-row">
+        <label>Tempo médio por atendimento (TMA):</label>
+        <input type="range" min="8" max="25" value="15" step="1" id="tma-slider" oninput="updateErlang(this.value)">
+        <span class="control-val" id="tma-out">15 min</span>
+        <span class="control-hint">Ajuste o TMA conforme o tipo de serviço predominante no período. Para Entrada de Título use 15–18 min; para Certidão/Retirada use 8–12 min.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Horário</th>
+            <th>Chegadas/hora</th>
+            <th title="Número mínimo de atendentes para que ninguém espere mais de 3 minutos">Atendentes necessários ①</th>
+            <th title="Percentual do tempo que os atendentes ficam ocupados">Ocupação da equipe ②</th>
+            <th title="Tempo médio que o cliente aguarda até ser chamado">Espera estimada do cliente ③</th>
+            <th>Situação</th>
+          </tr></thead>
+          <tbody id="erlang-body"></tbody>
+        </table>
+      </div>
+      <div class="note" id="erlang-note"></div>
+      <div id="team-cap-row" class="note" style="margin-top:8px"></div>
+    </div>
+
+    <div class="glossary">
+      <h3>Como ler esta tabela</h3>
+      <div class="gloss-item">
+        <div class="gloss-term">① Atendentes necessários</div>
+        <div class="gloss-def">Número mínimo de guichês abertos para que o cliente espere no máximo 3 minutos antes de ser atendido.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">② Ocupação da equipe</div>
+        <div class="gloss-def">Percentual do tempo em que os atendentes ficam efetivamente atendendo. Entre 60–80% é o ideal: garante rapidez sem deixar a equipe ociosa.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">③ Espera estimada do cliente (Wq)</div>
+        <div class="gloss-def">Tempo médio que o cliente fica na fila antes de ser chamado ao guichê. <strong>Não inclui o tempo de atendimento em si.</strong> A meta é ≤ 3 minutos.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PAINEL 2: ATENDENTES ═══ -->
+  <div id="atend" class="panel">
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Desempenho individual — comparativo com a média</span>
+        <span id="atend-count" style="font-size:12px;color:var(--text3)"></span>
+      </div>
+      <div class="note" style="margin-bottom:10px">
+        Atendentes com menos de 12 senhas/dia (média) são excluídos desta análise — podem estar em período de adaptação, funções compartilhadas ou dados incompletos. 
+        <strong>Sinalização:</strong> 🔴 Abaixo do esperado &nbsp;|&nbsp; 🟡 Na faixa aceitável &nbsp;|&nbsp; 🟢 Acima da meta
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Colaborador</th>
+            <th>Média senhas/dia</th>
+            <th>vs. média da equipe</th>
+            <th>Capacidade/hora</th>
+            <th>TMA médio</th>
+            <th>Serviço principal</th>
+            <th>Status</th>
+          </tr></thead>
+          <tbody id="atend-body"></tbody>
+        </table>
+      </div>
+      <div class="note" id="atend-note"></div>
+    </div>
+  </div>
+
+  <!-- ═══ PAINEL 3: DEMANDA POR HORA ═══ -->
+  <div id="demanda" class="panel">
+    <div class="section">
+      <div class="section-head"><span class="section-title">Fluxo de senhas ao longo do dia</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Horário</th>
+            <th>Senhas/hora (média histórica)</th>
+            <th>Volume relativo</th>
+            <th>Classificação</th>
+          </tr></thead>
+          <tbody id="demanda-body"></tbody>
+        </table>
+      </div>
+      <div class="note">Média histórica calculada a partir de todos os dias registrados na planilha. O pico ocorre no período 11h–12h (12,6 senhas/h), seguido por 14h–15h (12,2/h).</div>
+    </div>
+  </div>
+
+  <!-- ═══ PAINEL 4: POR SERVIÇO ═══ -->
+  <div id="servicos" class="panel">
+    <div class="section">
+      <div class="section-head"><span class="section-title">Distribuição por tipo de serviço</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Tipo de serviço</th>
+            <th>Média/dia</th>
+            <th>Participação</th>
+            <th>Média/hora</th>
+            <th>Espera média na fila</th>
+            <th>Impacto no TMA</th>
+          </tr></thead>
+          <tbody id="servico-body"></tbody>
+        </table>
+      </div>
+      <div class="note">
+        <strong>Entrada de Título</strong> representa ~50% da demanda e tem o maior TMA — é o principal driver do dimensionamento de equipe. 
+        Certidão e Retirada têm atendimento mais rápido e podem ser absorvidos com menos guichês.
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PAINEL 5: GLOSSÁRIO ═══ -->
+  <div id="glossario" class="panel">
+    <div class="glossary" style="border:none;padding:0">
+      <h3 style="margin-bottom:16px">Glossário de termos</h3>
+
+      <div class="gloss-item">
+        <div class="gloss-term">TMA — Tempo Médio de Atendimento</div>
+        <div class="gloss-def">Quanto tempo, em média, um atendente leva para concluir um atendimento completo — desde chamar o cliente até finalizar o serviço. É o principal parâmetro para calcular quantos atendentes são necessários.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Wq — Tempo de espera na fila (Wait time in queue)</div>
+        <div class="gloss-def">O tempo que o cliente espera sentado, antes de ser chamado. Não inclui o atendimento em si. A meta do cartório é manter esse tempo abaixo de 3 minutos.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Modelo Erlang C</div>
+        <div class="gloss-def">Fórmula matemática criada pelo engenheiro dinamarquês Agner Erlang para calcular o número ideal de atendentes em uma central de atendimento. Considera: o ritmo de chegada de clientes, o tempo de cada atendimento e quantos guichês estão abertos. É o padrão usado em call centers, bancos e serviços públicos no mundo todo.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Ocupação da equipe (ρ — rho)</div>
+        <div class="gloss-def">Percentual do tempo em que os atendentes estão efetivamente ocupados atendendo. Se a ocupação for 100%, o sistema trava — a fila cresce indefinidamente. O ideal é ficar entre 60% e 80%: garante agilidade e absorve variações de demanda sem travar.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Demanda (λ — lambda)</div>
+        <div class="gloss-def">Quantidade de clientes que chegam por hora. É medida pela emissão de senhas. Varia ao longo do dia — o pico é entre 11h e 12h.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Capacidade/hora por atendente</div>
+        <div class="gloss-def">Número de clientes que um único atendente consegue atender em uma hora, calculado como: 60 minutos ÷ TMA. Se o TMA é 15 min, cada atendente atende 4 clientes/hora.</div>
+      </div>
+      <div class="gloss-item">
+        <div class="gloss-term">Atendente "abaixo do esperado"</div>
+        <div class="gloss-def">Colaborador cuja média diária de senhas está mais de 20% abaixo da média da equipe (excluindo quem tem menos de 12 senhas/dia). Pode indicar necessidade de apoio, treinamento ou realocação de tarefas.</div>
+      </div>
+    </div>
+  </div>
+</div><!-- .app -->
+
+<script>
+// ══════════════════════════════════════════════════════
+// CONFIGURAÇÃO
+// ══════════════════════════════════════════════════════
+const API_URL = 'https://script.google.com/macros/s/AKfycbzc-6ecWfD5w3xY8xY2HiEDLECfyKZZ7THx_4JG8Ph2cOCKbrVmuKnD_z7wuKryUTJQ/exec';
+const MIN_SENHAS_DIA = 12;  // filtro mínimo
+
+// Dados históricos fixos (da planilha Senhas-Tempo-Espera.xlsx)
+const horaData = [
+  {hora:'09h–10h', lam:8.9},
+  {hora:'10h–11h', lam:11.2},
+  {hora:'11h–12h', lam:12.6},
+  {hora:'12h–13h', lam:10.9},
+  {hora:'13h–14h', lam:10.7},
+  {hora:'14h–15h', lam:12.2},
+  {hora:'15h–16h', lam:11.7},
+];
+const servicoData = [
+  {serv:'Entrada de Título', dia:39.7, pct:49.6, hora:5.7, espera:'5–8 min',  tma:'Alto (15–18 min)'},
+  {serv:'Retirada de Título', dia:18.6, pct:23.2, hora:2.7, espera:'3–5 min', tma:'Médio (8–12 min)'},
+  {serv:'Certidão',           dia:17.8, pct:22.2, hora:2.5, espera:'3–6 min', tma:'Médio (8–12 min)'},
+  {serv:'Preferencial',       dia:2.4,  pct:3.0,  hora:0.3, espera:'2–6 min', tma:'Variável'},
+  {serv:'Escrevente',         dia:0.8,  pct:1.0,  hora:0.1, espera:'< 1 min', tma:'Baixo (< 5 min)'},
+  {serv:'Prioritário',        dia:0.7,  pct:0.9,  hora:0.1, espera:'variável',tma:'Variável'},
+];
+
+// ══════════════════════════════════════════════════════
+// ERLANG C
+// ══════════════════════════════════════════════════════
+function erlangC(c, lam, mu) {
+  const a = lam / mu, rho = lam / (c * mu);
+  if (rho >= 1) return 1;
+  let sum = 0;
+  for (let n = 0; n < c; n++) {
+    let t = 1; for (let i = 1; i <= n; i++) t = t * a / i;
+    sum += t;
+  }
+  let fc = 1; for (let i = 1; i <= c; i++) fc *= i;
+  const last = (Math.pow(a, c) / fc) / (1 - rho);
+  return last / (sum + last);
+}
+function avgWait(c, lam, mu) {
+  const rho = lam / (c * mu);
+  if (rho >= 1) return Infinity;
+  const C = erlangC(c, lam, mu);
+  return (C / (c * mu * (1 - rho))) * 60;
+}
+
+// ══════════════════════════════════════════════════════
+// TABS
+// ══════════════════════════════════════════════════════
+function showTab(id) {
+  const ids = ['dim','atend','demanda','servicos','glossario'];
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ids[i] === id));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === id));
+}
+
+// ══════════════════════════════════════════════════════
+// ERLANG TABLE
+// ══════════════════════════════════════════════════════
+let teamCapHora = 0;  // atualizado pelos dados da planilha
+let numAtendAtivos = 0;
+
+function updateErlang(tmaVal) {
+  const tma = parseInt(tmaVal);
+  document.getElementById('tma-out').textContent = tma + ' min';
+  const mu = 60 / tma;
+  const eBody = document.getElementById('erlang-body');
+  eBody.innerHTML = '';
+
+  horaData.forEach(d => {
+    const minC = Math.ceil(d.lam / mu) + 1;
+    let cNec = minC, wq = Infinity;
+    for (let c = minC; c <= minC + 30; c++) {
+      const w = avgWait(c, d.lam, mu);
+      if (w <= 3) { cNec = c; wq = w; break; }
+    }
+    const rhoNec = d.lam / (cNec * mu);
+    const isPeak = d.lam >= 12;
+
+    // situação vs equipe atual
+    let situBadge = '';
+    if (numAtendAtivos > 0) {
+      const diff = numAtendAtivos - cNec;
+      if (diff >= 2)       situBadge = `<span class="badge ok">✓ Folga de ${diff} atend.</span>`;
+      else if (diff === 1) situBadge = `<span class="badge ok">✓ 1 atend. de folga</span>`;
+      else if (diff === 0) situBadge = `<span class="badge warn">⚠ Exato — sem folga</span>`;
+      else                 situBadge = `<span class="badge alert">✗ Faltam ${Math.abs(diff)} atend.</span>`;
+    } else {
+      situBadge = `<span class="badge info">— aguardando dados</span>`;
+    }
+
+    const occClass = rhoNec > 0.85 ? 'alert' : rhoNec > 0.75 ? 'warn' : 'ok';
+
+    eBody.innerHTML += `<tr>
+      <td><strong>${d.hora}</strong></td>
+      <td>${d.lam.toFixed(1)}</td>
+      <td style="font-weight:700;font-size:16px;color:var(--accent)">${cNec}</td>
+      <td><span class="badge ${occClass}">${Math.round(rhoNec*100)}%</span></td>
+      <td>${isFinite(wq) ? wq.toFixed(1) + ' min' : '∞'}</td>
+      <td>${situBadge}</td>
+    </tr>`;
+  });
+
+  const note = document.getElementById('erlang-note');
+  note.innerHTML = `<strong>TMA configurado: ${tma} min</strong> → cada atendente processa <strong>${(60/tma).toFixed(1)} clientes/hora</strong>. `
+    + `Meta: cliente espera no máximo 3 minutos antes de ser chamado.`;
+
+  if (numAtendAtivos > 0) {
+    const capH = (numAtendAtivos * 60 / tma).toFixed(1);
+    document.getElementById('team-cap-row').innerHTML =
+      `<strong>Capacidade da equipe atual (${numAtendAtivos} atendentes, TMA ${tma} min):</strong> `
+      + `${capH} senhas/hora · Pico histórico: 12,6/hora · `
+      + (parseFloat(capH) >= 12.6
+          ? `<span style="color:var(--ok)">✓ Equipe comporta o pico histórico</span>`
+          : `<span style="color:var(--alert)">✗ Equipe abaixo da capacidade para o pico</span>`);
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// DEMANDA TABLE (estática)
+// ══════════════════════════════════════════════════════
+function buildDemandaTable() {
+  const maxLam = Math.max(...horaData.map(d => d.lam));
+  const body = document.getElementById('demanda-body');
+  horaData.forEach(d => {
+    const isPeak = d.lam >= 12;
+    const pct = Math.round(d.lam / maxLam * 100);
+    body.innerHTML += `<tr>
+      <td><strong>${d.hora}</strong></td>
+      <td>${d.lam.toFixed(1)}</td>
+      <td><div class="bar-wrap">
+        <div class="bar-bg"><div class="bar-fill${isPeak?' peak':''}" style="width:${pct}%"></div></div>
+        <span style="font-size:12px;color:var(--text3)">${pct}%</span>
+      </div></td>
+      <td><span class="badge ${isPeak?'warn':'ok'}">${isPeak?'🔺 Pico':'Normal'}</span></td>
+    </tr>`;
+  });
+}
+
+function buildServicosTable() {
+  const body = document.getElementById('servico-body');
+  servicoData.forEach(d => {
+    body.innerHTML += `<tr>
+      <td>${d.serv}</td>
+      <td>${d.dia.toFixed(1)}</td>
+      <td><div class="bar-wrap">
+        <div class="bar-bg"><div class="bar-fill" style="width:${d.pct}%"></div></div>
+        <span style="font-size:12px;color:var(--text3)">${d.pct}%</span>
+      </div></td>
+      <td>${d.hora.toFixed(1)}</td>
+      <td>${d.espera}</td>
+      <td><span class="badge ${d.tma.startsWith('Alto')?'warn':d.tma.startsWith('Médio')?'info':'ok'}">${d.tma}</span></td>
+    </tr>`;
+  });
+}
+
+// ══════════════════════════════════════════════════════
+// GOOGLE SHEETS — buscar e processar
+// ══════════════════════════════════════════════════════
+function parseTime(str) {
+  // "00:10:00" ou "0:10:00" → minutos
+  if (!str) return null;
+  const parts = str.toString().trim().split(':');
+  if (parts.length >= 2) {
+    return parseInt(parts[0]) * 60 + parseInt(parts[1]) + (parts[2] ? parseInt(parts[2]) / 60 : 0);
+  }
+  return null;
+}
+
+function parseNum(val) {
+  if (val === undefined || val === null || val === '') return NaN;
+  return parseFloat(val.toString().replace(',', '.'));
+}
+
+async function loadSheetData() {
+  const dot  = document.getElementById('status-dot');
+  const stxt = document.getElementById('status-text');
+  stxt.textContent = 'Buscando dados da planilha…';
+
+  try {
+    const resp = await fetch(API_URL);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const jsonRows = await resp.json();
+
+    if (!Array.isArray(jsonRows) || jsonRows.length === 0) throw new Error('Planilha vazia ou aba não encontrada');
+
+    // jsonRows é array de objetos {Colaborador, "Média diária senhas", ...}
+    // Normaliza chaves para busca flexível
+    function getVal(row, candidates) {
+      const keys = Object.keys(row);
+      for (const c of candidates) {
+        const k = keys.find(k => k.trim().toLowerCase().includes(c.toLowerCase()));
+        if (k !== undefined) return row[k];
+      }
+      return undefined;
+    }
+
+    // Agrupa por colaborador
+    const map = {};
+    for (const r of jsonRows) {
+      const nome = (getVal(r, ['colaborador','atendente','nome']) || '').toString().trim();
+      if (!nome) continue;
+      if (!map[nome]) map[nome] = { nome, registros: [], tmas: [], servicos: {entrada:0, retirada:0, certidao:0, pref:0, prior:0} };
+      const md = parseNum(getVal(r, ['média diária senhas','media diaria senhas','media diaria','média diária']));
+      if (!isNaN(md)) map[nome].registros.push(md);
+      const tmaRaw = getVal(r, ['média tempo aten','media tempo aten','tma','tempo médio','tempo medio']);
+      const tma = parseTime(tmaRaw);
+      if (tma) map[nome].tmas.push(tma);
+      // serviços
+      const svcMap = {
+        entrada:  ['entrada título','entrada titulo','entrada'],
+        retirada: ['retirada título','retirada titulo','retirada'],
+        certidao: ['certidão','certidao'],
+        pref:     ['preferencial'],
+        prior:    ['prioritário','prioritario'],
+      };
+      Object.entries(svcMap).forEach(([k, cands]) => {
+        const v = parseNum(getVal(r, cands));
+        if (!isNaN(v)) map[nome].servicos[k] += v;
+      });
+    }
+
+    // Calcula médias por colaborador
+    let atendentes = Object.values(map).map(a => {
+      const mediaDia = a.registros.length ? a.registros.reduce((s,v)=>s+v,0)/a.registros.length : 0;
+      const mediaTma = a.tmas.length ? a.tmas.reduce((s,v)=>s+v,0)/a.tmas.length : null;
+      const svcs = a.servicos;
+      const totalSvc = Object.values(svcs).reduce((s,v)=>s+v,0);
+      const mainSvc = totalSvc > 0 ? Object.entries(svcs).sort((a,b)=>b[1]-a[1])[0][0] : null;
+      const svcNames = {entrada:'Entrada de Título', retirada:'Retirada', certidao:'Certidão', pref:'Preferencial', prior:'Prioritário'};
+      return { nome: a.nome, mediaDia, mediaTma, mainSvc: mainSvc ? svcNames[mainSvc] : '—' };
+    });
+
+    // Filtra < 12 senhas/dia
+    const ativos = atendentes.filter(a => a.mediaDia >= MIN_SENHAS_DIA);
+    const excluidos = atendentes.filter(a => a.mediaDia < MIN_SENHAS_DIA);
+
+    if (ativos.length === 0) throw new Error('Nenhum atendente com ≥ 12 senhas/dia encontrado');
+
+    const mediaEquipe = ativos.reduce((s,a)=>s+a.mediaDia,0) / ativos.length;
+    numAtendAtivos = ativos.length;
+
+    // KPIs
+    const tmaSlider = parseInt(document.getElementById('tma-slider').value);
+    const capHora = (numAtendAtivos * 60 / tmaSlider).toFixed(1);
+    teamCapHora = parseFloat(capHora);
+
+    document.getElementById('kpi-atend').textContent = numAtendAtivos;
+    document.getElementById('kpi-media').textContent = mediaEquipe.toFixed(1);
+    document.getElementById('kpi-cap-hora').textContent = capHora;
+
+    const capOk = teamCapHora >= 12.6;
+    const kpiSt = document.getElementById('kpi-status');
+    kpiSt.className = 'kpi ' + (capOk ? 'ok' : 'alert');
+    document.getElementById('kpi-status-val').textContent = capOk ? '✓ OK' : '✗ Atenção';
+    document.getElementById('kpi-status-sub').textContent = capOk ? 'Capacidade suficiente para o pico' : 'Capacidade abaixo do pico histórico';
+
+    // Tabela atendentes
+    ativos.sort((a,b) => b.mediaDia - a.mediaDia);
+    const aBody = document.getElementById('atend-body');
+    aBody.innerHTML = '';
+
+    ativos.forEach(a => {
+      const diff = a.mediaDia - mediaEquipe;
+      const pct  = (diff / mediaEquipe) * 100;
+      const capH = a.mediaTma ? (60 / a.mediaTma).toFixed(1) : '—';
+
+      let status, badge;
+      if (pct < -20)      { status = 'alert'; badge = `<span class="badge alert">🔴 Abaixo do esperado</span>`; }
+      else if (pct < 10)  { status = 'warn';  badge = `<span class="badge warn">🟡 Na faixa aceitável</span>`; }
+      else                { status = 'ok';    badge = `<span class="badge ok">🟢 Acima da meta</span>`; }
+
+      const diffStr = (diff >= 0 ? '+' : '') + diff.toFixed(1);
+      const diffColor = diff >= 0 ? 'var(--ok)' : 'var(--alert)';
+
+      aBody.innerHTML += `<tr>
+        <td><strong>${a.nome}</strong></td>
+        <td>${a.mediaDia.toFixed(1)}</td>
+        <td><span style="font-weight:600;color:${diffColor}">${diffStr}</span> <span style="font-size:11px;color:var(--text3)">(${pct>=0?'+':''}${pct.toFixed(0)}%)</span></td>
+        <td>${capH} senhas/h</td>
+        <td>${a.mediaTma ? a.mediaTma.toFixed(0) + ' min' : '—'}</td>
+        <td>${a.mainSvc}</td>
+        <td>${badge}</td>
+      </tr>`;
+    });
+
+    document.getElementById('atend-count').textContent = `${ativos.length} ativos · ${excluidos.length} excluídos (< ${MIN_SENHAS_DIA}/dia)`;
+    document.getElementById('atend-note').innerHTML =
+      `Média da equipe: <strong>${mediaEquipe.toFixed(1)} senhas/dia</strong>. `
+      + `Faixa aceitável: ${(mediaEquipe*0.8).toFixed(1)}–${(mediaEquipe*1.1).toFixed(1)} senhas/dia. `
+      + (excluidos.length > 0 ? `Excluídos da análise: <strong>${excluidos.map(e=>e.nome).join(', ')}</strong>.` : '');
+
+    dot.className  = 'status-dot';
+    stxt.textContent = `Dados atualizados · ${ativos.length} atendentes analisados · ${rows.length - 1} registros carregados`;
+
+    updateErlang(tmaSlider);
+
+  } catch(err) {
+    dot.className  = 'status-dot error';
+    stxt.textContent = `Erro ao carregar planilha: ${err.message}`;
+    console.error(err);
+    // Fallback: mostra app com dados históricos apenas
+    updateErlang(parseInt(document.getElementById('tma-slider').value));
+  }
+
+  document.getElementById('loading-overlay').style.display = 'none';
+}
+
+
+
+// ══════════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════════
+buildDemandaTable();
+buildServicosTable();
+updateErlang(15);
+loadSheetData();
+
+document.getElementById('tma-slider').addEventListener('input', function() {
+  updateErlang(this.value);
+});
+</script>
+</body>
+</html>
