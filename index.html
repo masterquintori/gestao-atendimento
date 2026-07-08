@@ -130,7 +130,7 @@ tr:hover td { background: #fafaf8; }
 
 <div class="app">
   <header>
-    <h1>Gestão de Atendimento — Quinto Registro de Imóveis de São Paulo</h1>
+    <h1>Gestão de Atendimento — Registro de Imóveis</h1>
     <p>Painel do líder de atendimento · Monitoramento de demanda e capacidade</p>
   </header>
 
@@ -491,9 +491,13 @@ async function loadSheetData() {
   stxt.textContent = 'Buscando dados da planilha…';
 
   try {
-    const resp = await fetch(API_URL);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const resp = await fetch(API_URL, {
+      method: 'GET',
+      redirect: 'follow',
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} — verifique se o Apps Script está publicado como "Qualquer pessoa"`);
     const jsonRows = await resp.json();
+    if (jsonRows.error) throw new Error('Apps Script: ' + jsonRows.error);
 
     if (!Array.isArray(jsonRows) || jsonRows.length === 0) throw new Error('Planilha vazia ou aba não encontrada');
 
