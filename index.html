@@ -280,54 +280,32 @@ tr:hover td{background:#faf9f7}
 // ══════════════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════════════
-const API_URL     = 'https://script.google.com/macros/s/AKfycbzc-6ecWfD5w3xY8xY2HiEDLECfyKZZ7THx_4JG8Ph2cOCKbrVmuKnD_z7wuKryUTJQ/exec';
-const MIN_SENHAS  = 12;
-const TMA_PADRAO  = 10;
-const META_ESPERA = 3; // minutos
+const API_URL    = 'https://script.google.com/macros/s/AKfycbzc-6ecWfD5w3xY8xY2HiEDLECfyKZZ7THx_4JG8Ph2cOCKbrVmuKnD_z7wuKryUTJQ/exec';
+const MIN_SENHAS = 12;
+const TMA_PADRAO = 10;
+const META_ESPERA= 3;
 
-// Demanda histórica por hora (da planilha xlsx analisada)
 const HORA_DATA = [
-  {h:'09h–10h', lam:8.9},
-  {h:'10h–11h', lam:11.2},
-  {h:'11h–12h', lam:12.6},
-  {h:'12h–13h', lam:10.9},
-  {h:'13h–14h', lam:10.7},
-  {h:'14h–15h', lam:12.2},
+  {h:'09h–10h', lam:8.9},  {h:'10h–11h', lam:11.2},
+  {h:'11h–12h', lam:12.6}, {h:'12h–13h', lam:10.9},
+  {h:'13h–14h', lam:10.7}, {h:'14h–15h', lam:12.2},
   {h:'15h–16h', lam:11.7},
 ];
-const PICO_LAM = 12.6;
 
-// Estado global
-let G = {
-  todosRegistros: [],   // todos os registros brutos
-  atendentes: [],       // processados (ativos historicamente)
-  periodos: [],         // lista de MM/yyyy disponíveis
-  mesAtual: '',
-  mesAnterior: '',
-  mesRef: '',           // período de avaliação atual
-  numAtivosAtual: 0,
-  mediaEquipeAtual: 0,
-  demandaAtual: 0,
+// Estado global — tudo aqui, sem variáveis espalhadas
+const G = {
+  registros:   [],   // todos os registros brutos [{Data, Colaborador, ...}]
+  periodos:    [],   // ['06/2026', '05/2026', ...] ordenados desc
+  mesRef:      '',   // período selecionado no filtro
+  mesAnterior: '',   // mês imediatamente anterior ao mesRef
+  // calculados ao mudar período:
+  ativos:      [],   // atendentes com mediaHist >= 12, enriquecidos com mediaPer
+  mediaEqPer:  0,
+  numAtivosPer:0,
   demandaHist: 0,
+  demandaPer:  0,
+  capHistMedia:0,
 };
-
-// ══════════════════════════════════════════════════════
-// ERLANG C
-// ══════════════════════════════════════════════════════
-function erlangC(c, lam, mu) {
-  const a = lam/mu, rho = lam/(c*mu);
-  if (rho >= 1) return 1;
-  let sum = 0;
-  for (let n=0;n<c;n++){let t=1;for(let i=1;i<=n;i++)t=t*a/i;sum+=t;}
-  let fc=1;for(let i=1;i<=c;i++)fc*=i;
-  const last=(Math.pow(a,c)/fc)/(1-rho);
-  return last/(sum+last);
-}
-function avgWait(c, lam, mu) {
-  const rho=lam/(c*mu);
-  if(rho>=1)return Infinity;
-  return (erlangC(c,lam,mu)/(c*mu*(1-rho)))*60;
-}
 
 // ══════════════════════════════════════════════════════
 // HELPERS
@@ -341,24 +319,378 @@ function getVal(row, cands) {
   return undefined;
 }
 function parseNum(v) {
-  if (v===undefined||v===null||v==='') return NaN;
-  return parseFloat(v.toString().replace(',','.'));
+  if (v == null || v === '') return NaN;
+  return parseFloat(v.toString().replace(',', '.'));
 }
 function parseTime(str) {
   if (!str) return null;
   const p = str.toString().trim().split(':');
-  if (p.length >= 2) return parseInt(p[0])*60 + parseInt(p[1]) + (p[2]?parseInt(p[2])/60:0);
+  if (p.length >= 2) return parseInt(p[0])*60 + parseInt(p[1]) + (p[2] ? parseInt(p[2])/60 : 0);
   return null;
 }
-function mesStr(mm, yyyy) {
+function mesLabel(mmyyyy) {
+  // '06/2026' → 'Jun/2026'
   const nomes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const [mm, yyyy] = mmyyyy.split('/');
   return `${nomes[parseInt(mm)-1]}/${yyyy}`;
 }
-function verdict(val, ref, label) {
-  const pct = ref > 0 ? (val - ref) / ref * 100 : 0;
-  if (Math.abs(pct) <= 10) return {cls:'ok',   icon:'✓', txt:`${label}: na média (${pct>=0?'+':''}${pct.toFixed(0)}%)`};
-  if (pct > 10)            return {cls:'ok',   icon:'▲', txt:`${label}: acima da média (+${pct.toFixed(0)}%)`};
-  return                          {cls:'alert', icon:'▼', txt:`${label}: abaixo da média (${pct.toFixed(0)}%)`};
+function mesAnteriorDe(mmyyyy) {
+  const [mm, yyyy] = mmyyyy.split('/').map(Number);
+  if (mm === 1) return `12/${yyyy-1}`;
+  return `${String(mm-1).padStart(2,'0')}/${yyyy}`;
+}
+function mediaArr(arr) {
+  return arr.length ? arr.reduce((s,v)=>s+v,0)/arr.length : null;
+}
+
+// ══════════════════════════════════════════════════════
+// ERLANG C
+// ══════════════════════════════════════════════════════
+function erlangC(c, lam, mu) {
+  const a = lam/mu, rho = lam/(c*mu);
+  if (rho >= 1) return 1;
+  let sum=0;
+  for(let n=0;n<c;n++){let t=1;for(let i=1;i<=n;i++)t=t*a/i;sum+=t;}
+  let fc=1;for(let i=1;i<=c;i++)fc*=i;
+  const last=(Math.pow(a,c)/fc)/(1-rho);
+  return last/(sum+last);
+}
+function avgWait(c, lam, mu) {
+  const rho=lam/(c*mu);
+  if(rho>=1)return Infinity;
+  return (erlangC(c,lam,mu)/(c*mu*(1-rho)))*60;
+}
+
+// ══════════════════════════════════════════════════════
+// CALCULAR MÉTRICAS PARA O PERÍODO SELECIONADO
+// Chamado toda vez que mesRef muda
+// ══════════════════════════════════════════════════════
+function calcPeriodo() {
+  const mesRef = G.mesRef;
+  G.mesAnterior = mesAnteriorDe(mesRef);
+
+  // --- 1. Agrupa HISTÓRICO completo por atendente (todas as linhas) ---
+  const mapHist = {};
+  for (const r of G.registros) {
+    const nome = (getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
+    if (!nome) continue;
+    if (!mapHist[nome]) mapHist[nome] = { regs:[], tmas:[], svcs:{entrada:0,retirada:0,certidao:0,pref:0,prior:0} };
+    const md = parseNum(getVal(r,['média diária senhas','media diaria','média diária']));
+    if (!isNaN(md)) mapHist[nome].regs.push(md);
+    const tma = parseTime(getVal(r,['média tempo aten','tempo médio','tempo medio','tma']));
+    if (tma) mapHist[nome].tmas.push(tma);
+    const svcMap = {
+      entrada:['entrada título','entrada titulo','entrada'],
+      retirada:['retirada título','retirada titulo','retirada'],
+      certidao:['certidão','certidao'],
+      pref:['preferencial'],
+      prior:['prioritário','prioritario'],
+    };
+    Object.entries(svcMap).forEach(([k,cs])=>{
+      const v=parseNum(getVal(r,cs));
+      if(!isNaN(v))mapHist[nome].svcs[k]+=v;
+    });
+  }
+
+  // --- 2. Agrupa PERÍODO SELECIONADO por atendente ---
+  const mapPer = {};
+  for (const r of G.registros) {
+    const data = (getVal(r,['data','mês','mes'])||'').toString().trim();
+    if (data !== mesRef) continue;
+    const nome = (getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
+    if (!nome) continue;
+    if (!mapPer[nome]) mapPer[nome] = [];
+    const md = parseNum(getVal(r,['média diária senhas','media diaria','média diária']));
+    if (!isNaN(md)) mapPer[nome].push(md);
+  }
+
+  // --- 3. Monta lista de atendentes ---
+  const svcNames = {entrada:'Entrada de Título',retirada:'Retirada',certidao:'Certidão',pref:'Preferencial',prior:'Prioritário'};
+
+  const todos = Object.entries(mapHist).map(([nome, h]) => {
+    const mediaHist = mediaArr(h.regs) ?? 0;
+    const mediaTma  = mediaArr(h.tmas);
+    const svcs=h.svcs, tot=Object.values(svcs).reduce((s,v)=>s+v,0);
+    const main=tot>0?Object.entries(svcs).sort((a,b)=>b[1]-a[1])[0][0]:null;
+    const regsP = mapPer[nome] || [];
+    const mediaPer = regsP.length ? mediaArr(regsP) : null;
+    return { nome, mediaHist, mediaTma, mainSvc: main?svcNames[main]:'—', mediaPer };
+  });
+
+  // --- 4. Filtra: ativo = mediaHist >= 12 ---
+  G.ativos = todos.filter(a => a.mediaHist >= MIN_SENHAS);
+
+  // --- 5. Métricas do período ---
+  const comDados = G.ativos.filter(a => a.mediaPer !== null);
+  G.numAtivosPer  = comDados.length;
+  G.mediaEqPer    = mediaArr(comDados.map(a=>a.mediaPer)) ?? 0;
+  G.demandaPer    = comDados.reduce((s,a)=>s+a.mediaPer,0);
+  G.capHistMedia  = mediaArr(G.ativos.map(a=>a.mediaHist)) ?? 0;
+  G.demandaHist   = G.ativos.reduce((s,a)=>s+a.mediaHist,0);
+}
+
+// ══════════════════════════════════════════════════════
+// RENDER — CARDS DE DIAGNÓSTICO
+// ══════════════════════════════════════════════════════
+function renderCards() {
+  const g = G;
+
+  // helper veredito
+  function vrd(val, ref) {
+    if (!val || !ref) return {cls:'info', txt:'— Sem dados'};
+    const pct=(val-ref)/ref*100;
+    if (Math.abs(pct)<=10) return {cls:'ok',   txt:`Na média (${pct>=0?'+':''}${pct.toFixed(0)}%)`};
+    if (pct>10)            return {cls:'ok',   txt:`Acima da média (+${pct.toFixed(0)}%)`};
+    return                        {cls:'alert', txt:`Abaixo da média (${pct.toFixed(0)}%)`};
+  }
+
+  // CARD 1 — Demanda
+  setText('d-hist',  g.demandaHist.toFixed(0)+' senhas/dia');
+  setText('d-atual', g.demandaPer>0 ? g.demandaPer.toFixed(0)+' senhas/dia' : '—');
+  setVerdict('d-verdict', vrd(g.demandaPer||null, g.demandaHist||null));
+
+  // CARD 2 — Capacidade por atendente
+  setText('c-hist',  g.capHistMedia.toFixed(1)+' senhas/dia');
+  setText('c-atual', g.mediaEqPer>0 ? g.mediaEqPer.toFixed(1)+' senhas/dia' : '—');
+  setVerdict('c-verdict', vrd(g.mediaEqPer||null, g.capHistMedia||null));
+
+  // CARD 3 — Equipe
+  const capTotalPer = g.ativos.filter(a=>a.mediaPer!==null).reduce((s,a)=>s+a.mediaPer,0);
+  setText('e-ativos',  g.numAtivosPer+' atendentes');
+  setText('e-cap-dia', capTotalPer.toFixed(0)+' senhas/dia');
+  setText('e-dem',     g.demandaPer>0 ? g.demandaPer.toFixed(0)+' senhas/dia' : '—');
+
+  const eEl = document.getElementById('e-verdict');
+  if (g.demandaPer>0 && capTotalPer>0) {
+    const diff=capTotalPer-g.demandaPer, pct=diff/g.demandaPer*100;
+    if      (pct>=10)  { eEl.className='verdict ok';    eEl.innerHTML=`✓ Capacidade suficiente (+${pct.toFixed(0)}% acima da demanda)`; }
+    else if (pct>=0)   { eEl.className='verdict warn';  eEl.innerHTML=`⚠ No limite — margem pequena (+${pct.toFixed(0)}%)`; }
+    else               { eEl.className='verdict alert'; eEl.innerHTML=`✗ Abaixo da demanda (${pct.toFixed(0)}%)`; }
+  } else {
+    eEl.className='verdict info'; eEl.innerHTML='— Sem dados no período';
+  }
+}
+
+function setText(id, val) { document.getElementById(id).textContent = val; }
+function setVerdict(id, v) {
+  const el=document.getElementById(id);
+  el.className='verdict '+v.cls;
+  el.innerHTML=v.txt;
+}
+
+// ══════════════════════════════════════════════════════
+// RENDER — TABELA ATENDENTES
+// ══════════════════════════════════════════════════════
+function renderAtendentes() {
+  const body = document.getElementById('atend-body');
+  body.innerHTML = '';
+
+  const mediaEq = G.mediaEqPer;
+
+  const lista = [...G.ativos].sort((a,b)=>{
+    if(a.mediaPer!==null && b.mediaPer!==null) return b.mediaPer-a.mediaPer;
+    if(a.mediaPer!==null) return -1;
+    if(b.mediaPer!==null) return 1;
+    return b.mediaHist-a.mediaHist;
+  });
+
+  lista.forEach(a => {
+    const semD = a.mediaPer === null;
+    const base = semD ? a.mediaHist : a.mediaPer;
+    const diff = mediaEq>0 ? base-mediaEq : 0;
+    const pct  = mediaEq>0 ? diff/mediaEq*100 : 0;
+
+    let badge;
+    if (semD)        badge=`<span class="badge info">— Sem dados</span>`;
+    else if(pct<-20) badge=`<span class="badge alert">🔴 Abaixo</span>`;
+    else if(pct<10)  badge=`<span class="badge warn">🟡 Na faixa</span>`;
+    else             badge=`<span class="badge ok">🟢 Acima</span>`;
+
+    const dStr = (diff>=0?'+':'')+diff.toFixed(1);
+    const dClr = diff>=0?'var(--green)':'var(--red)';
+    const valExib = semD
+      ? `<span style="color:var(--text3)">— <small>(hist: ${a.mediaHist.toFixed(1)})</small></span>`
+      : `${a.mediaPer.toFixed(1)} <small style="color:var(--text3)">(hist: ${a.mediaHist.toFixed(1)})</small>`;
+
+    body.innerHTML += `<tr>
+      <td><strong>${a.nome}</strong></td>
+      <td>${valExib}</td>
+      <td>${semD?'—':`<span style="font-weight:700;color:${dClr}">${dStr}</span> <small style="color:var(--text3)">(${pct>=0?'+':''}${pct.toFixed(0)}%)</small>`}</td>
+      <td>${a.mediaTma ? a.mediaTma.toFixed(0)+' min' : '—'}</td>
+      <td>${a.mainSvc}</td>
+      <td>${badge}</td>
+    </tr>`;
+  });
+
+  const excl = Object.values( // atendentes abaixo do mínimo histórico
+    G.registros.reduce((m,r)=>{
+      const n=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
+      if(!n)return m;
+      if(!m[n])m[n]=[];
+      const v=parseNum(getVal(r,['média diária senhas','media diaria','média diária']));
+      if(!isNaN(v))m[n].push(v);
+      return m;
+    },{})
+  ).filter(regs=>{ const m=mediaArr(regs)??0; return m>0&&m<MIN_SENHAS; }).length;
+
+  document.getElementById('atend-note').innerHTML =
+    `Período: <strong>${mesLabel(G.mesRef)}</strong> · `
+    +`Média da equipe no período: <strong>${mediaEq.toFixed(1)} senhas/dia</strong> · `
+    +`Faixa aceitável: ${(mediaEq*0.8).toFixed(1)}–${(mediaEq*1.1).toFixed(1)} senhas/dia`
+    +(excl>0?` · <span style="color:var(--text3)">${excl} atendente(s) excluído(s) por média hist. < ${MIN_SENHAS}/dia</span>`:'');
+}
+
+// ══════════════════════════════════════════════════════
+// RENDER — HISTÓRICO vs ATUAL
+// ══════════════════════════════════════════════════════
+function renderHistorico() {
+  const body = document.getElementById('hist-body');
+  body.innerHTML = '';
+
+  // Pré-computa média por (nome, período)
+  const cache = {};  // 'nome|MM/YYYY' → media
+  for (const r of G.registros) {
+    const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
+    const n=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
+    if(!d||!n)continue;
+    const key=`${n}|${d}`;
+    if(!cache[key])cache[key]=[];
+    const v=parseNum(getVal(r,['média diária senhas','media diaria','média diária']));
+    if(!isNaN(v))cache[key].push(v);
+  }
+  const getMed=(nome,mes)=>{
+    const arr=cache[`${nome}|${mes}`];
+    return arr&&arr.length ? mediaArr(arr) : null;
+  };
+
+  const mesAnt2 = mesAnteriorDe(G.mesAnterior); // 2 meses atrás
+
+  [...G.ativos].sort((a,b)=>b.mediaHist-a.mediaHist).forEach(a => {
+    const m2   = getMed(a.nome, mesAnt2);
+    const mAnt = getMed(a.nome, G.mesAnterior);
+    const mRef = getMed(a.nome, G.mesRef);
+
+    const fmt = v => v!==null ? v.toFixed(1) : '<span style="color:var(--text3)">—</span>';
+
+    let tend='—';
+    const base = mAnt ?? m2;
+    if (base!==null && mRef!==null) {
+      const d=mRef-base;
+      tend = d>1  ? `<span style="color:var(--green)">▲ +${d.toFixed(1)}</span>`
+           : d<-1 ? `<span style="color:var(--red)">▼ ${d.toFixed(1)}</span>`
+                  : `<span style="color:var(--text3)">→ estável</span>`;
+    }
+
+    body.innerHTML+=`<tr>
+      <td><strong>${a.nome}</strong></td>
+      <td>${a.mediaHist.toFixed(1)}</td>
+      <td>${fmt(mAnt)}</td>
+      <td>${fmt(mRef)}</td>
+      <td>${tend}</td>
+    </tr>`;
+  });
+
+  // Atualiza cabeçalho das colunas dinamicamente
+  const ths = document.querySelectorAll('#hist-body').item(0)
+    ?.closest('table')?.querySelectorAll('th');
+  if (ths && ths.length >= 5) {
+    ths[2].textContent = mesLabel(G.mesAnterior);
+    ths[3].textContent = mesLabel(G.mesRef);
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ERLANG TABLE
+// ══════════════════════════════════════════════════════
+function updateErlang(tmaVal) {
+  const tma = parseInt(tmaVal);
+  document.getElementById('tma-out').textContent = tma+' min';
+  const mu=60/tma;
+  const body=document.getElementById('erl-body');
+  body.innerHTML='';
+
+  HORA_DATA.forEach(d=>{
+    const minC=Math.ceil(d.lam/mu)+1;
+    let cNec=minC,wq=Infinity;
+    for(let c=minC;c<=minC+30;c++){
+      const w=avgWait(c,d.lam,mu);
+      if(w<=META_ESPERA){cNec=c;wq=w;break;}
+    }
+    const rho=d.lam/(cNec*mu);
+    const occCls=rho>0.85?'alert':rho>0.75?'warn':'ok';
+    const isPeak=d.lam>=12;
+
+    let sBadge='<span class="badge info">— sem dados</span>';
+    if(G.numAtivosPer>0){
+      const diff=G.numAtivosPer-cNec;
+      if      (diff>=2)  sBadge=`<span class="badge ok">✓ ${G.numAtivosPer} atend. (folga ${diff})</span>`;
+      else if (diff===1) sBadge=`<span class="badge ok">✓ ${G.numAtivosPer} atend. (folga 1)</span>`;
+      else if (diff===0) sBadge=`<span class="badge warn">⚠ ${G.numAtivosPer} atend. — sem folga</span>`;
+      else               sBadge=`<span class="badge alert">✗ ${G.numAtivosPer} atend. — faltam ${Math.abs(diff)}</span>`;
+    }
+
+    body.innerHTML+=`<tr>
+      <td><strong>${d.h}</strong>${isPeak?' <span class="badge warn" style="font-size:10px">pico</span>':''}</td>
+      <td>${d.lam.toFixed(1)}</td>
+      <td style="font-weight:700;font-size:17px;color:var(--blue)">${cNec}</td>
+      <td><span class="badge ${occCls}">${Math.round(rho*100)}%</span></td>
+      <td>${isFinite(wq)?wq.toFixed(1)+' min':'∞'}</td>
+      <td>${sBadge}</td>
+    </tr>`;
+  });
+
+  document.getElementById('erl-note').innerHTML=
+    `<strong>TMA = ${tma} min</strong> → cada atendente processa até <strong>${(60/tma).toFixed(1)} clientes/hora</strong>. `
+    +`Meta: cliente espera no máximo ${META_ESPERA} minutos na fila antes de ser chamado.`;
+}
+
+// ══════════════════════════════════════════════════════
+// DEMANDA POR HORA (estática)
+// ══════════════════════════════════════════════════════
+function buildHoraTable() {
+  const maxL=Math.max(...HORA_DATA.map(d=>d.lam));
+  const body=document.getElementById('hora-body');
+  HORA_DATA.forEach(d=>{
+    const isPeak=d.lam>=12,pct=Math.round(d.lam/maxL*100);
+    body.innerHTML+=`<tr>
+      <td><strong>${d.h}</strong></td><td>${d.lam.toFixed(1)}</td>
+      <td><div class="bar-w"><div class="bar-bg"><div class="bar-f${isPeak?' peak':''}" style="width:${pct}%"></div></div><span style="font-size:11px;color:var(--text3)">${pct}%</span></div></td>
+      <td><span class="badge ${isPeak?'warn':'ok'}">${isPeak?'🔺 Pico':'Normal'}</span></td>
+    </tr>`;
+  });
+}
+
+// ══════════════════════════════════════════════════════
+// FILTRO GLOBAL DE PERÍODO
+// ══════════════════════════════════════════════════════
+function onPeriodoChange(val) {
+  if (!val || val === G.mesRef) return;
+  G.mesRef = val;
+  document.getElementById('badge-periodo').textContent = 'Referência: '+mesLabel(val);
+  atualizaInfoFiltro();
+  calcPeriodo();
+  renderAll();
+}
+
+function navPeriodo(dir) {
+  const idx=G.periodos.indexOf(G.mesRef);
+  const novo=G.periodos[idx+dir];
+  if(!novo)return;
+  document.getElementById('gfil-periodo').value=novo;
+  onPeriodoChange(novo);
+}
+
+function atualizaInfoFiltro() {
+  const idx=G.periodos.indexOf(G.mesRef);
+  document.getElementById('gfil-info').textContent=
+    `${idx+1} de ${G.periodos.length} períodos`;
+}
+
+function renderAll() {
+  renderCards();
+  renderAtendentes();
+  renderHistorico();
+  updateErlang(parseInt(document.getElementById('tma-sl').value));
 }
 
 // ══════════════════════════════════════════════════════
@@ -371,458 +703,76 @@ function showTab(id) {
 }
 
 // ══════════════════════════════════════════════════════
-// ERLANG TABLE
-// ══════════════════════════════════════════════════════
-function updateErlang(tmaVal) {
-  const tma = parseInt(tmaVal);
-  document.getElementById('tma-out').textContent = tma + ' min';
-  const mu = 60/tma;
-  const body = document.getElementById('erl-body');
-  body.innerHTML = '';
-
-  HORA_DATA.forEach(d => {
-    const minC = Math.ceil(d.lam/mu)+1;
-    let cNec=minC, wq=Infinity;
-    for(let c=minC;c<=minC+30;c++){
-      const w=avgWait(c,d.lam,mu);
-      if(w<=META_ESPERA){cNec=c;wq=w;break;}
-    }
-    const rho = d.lam/(cNec*mu);
-    const occCls = rho>0.85?'alert':rho>0.75?'warn':'ok';
-    const isPeak = d.lam>=12;
-
-    // vs equipe atual
-    let stsBadge = '<span class="badge info">— sem dados</span>';
-    if (G.numAtivosAtual > 0) {
-      const diff = G.numAtivosAtual - cNec;
-      if      (diff >= 2)  stsBadge = `<span class="badge ok">✓ ${G.numAtivosAtual} atend. (folga ${diff})</span>`;
-      else if (diff === 1) stsBadge = `<span class="badge ok">✓ ${G.numAtivosAtual} atend. (folga 1)</span>`;
-      else if (diff === 0) stsBadge = `<span class="badge warn">⚠ ${G.numAtivosAtual} atend. — sem folga</span>`;
-      else                 stsBadge = `<span class="badge alert">✗ ${G.numAtivosAtual} atend. — faltam ${Math.abs(diff)}</span>`;
-    }
-
-    body.innerHTML += `<tr>
-      <td><strong>${d.h}</strong>${isPeak?' <span class="badge warn" style="font-size:10px">pico</span>':''}</td>
-      <td>${d.lam.toFixed(1)}</td>
-      <td style="font-weight:700;font-size:17px;color:var(--blue)">${cNec}</td>
-      <td><span class="badge ${occCls}">${Math.round(rho*100)}%</span></td>
-      <td>${isFinite(wq)?wq.toFixed(1)+' min':'∞'}</td>
-      <td>${stsBadge}</td>
-    </tr>`;
-  });
-
-  const mu_desc = (60/tma).toFixed(1);
-  document.getElementById('erl-note').innerHTML =
-    `<strong>TMA = ${tma} min</strong> → cada atendente processa até <strong>${mu_desc} clientes/hora</strong>. `
-    +`A coluna "Atendentes necessários" mostra o mínimo para que nenhum cliente espere mais de ${META_ESPERA} minutos na fila.`;
-}
-
-// ══════════════════════════════════════════════════════
-// DEMANDA POR HORA
-// ══════════════════════════════════════════════════════
-function buildHoraTable() {
-  const maxL = Math.max(...HORA_DATA.map(d=>d.lam));
-  const body = document.getElementById('hora-body');
-  HORA_DATA.forEach(d=>{
-    const isPeak=d.lam>=12;
-    const pct=Math.round(d.lam/maxL*100);
-    body.innerHTML+=`<tr>
-      <td><strong>${d.h}</strong></td>
-      <td>${d.lam.toFixed(1)}</td>
-      <td><div class="bar-w"><div class="bar-bg"><div class="bar-f${isPeak?' peak':''}" style="width:${pct}%"></div></div><span style="font-size:11px;color:var(--text3)">${pct}%</span></div></td>
-      <td><span class="badge ${isPeak?'warn':'ok'}">${isPeak?'🔺 Pico':'Normal'}</span></td>
-    </tr>`;
-  });
-}
-
-// ══════════════════════════════════════════════════════
-// RENDER ATENDENTES (com filtro de período)
-// ══════════════════════════════════════════════════════
-function renderAtendentes() {
-  const periodo = G.mesRef;  // usa período global
-  const body    = document.getElementById('atend-body');
-  body.innerHTML = '';
-
-  // Filtra registros pelo período selecionado (ou usa mesRef se vazio)
-  const perRef = periodo;
-
-  // Recalcula médias por atendente no período selecionado
-  const mapPer = {};
-  for (const r of G.todosRegistros) {
-    const data = (getVal(r,['data','mês','mes'])||'').toString().trim();
-    if (data !== perRef) continue;
-    const nome = (getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
-    if (!nome) continue;
-    if (!mapPer[nome]) mapPer[nome] = [];
-    const md = parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
-    if (!isNaN(md)) mapPer[nome].push(md);
-  }
-
-  // Só mostra atendentes que são ativos historicamente
-  const ativos = G.atendentes.filter(a => a.mediaHist >= MIN_SENHAS);
-
-  // Calcula médias no período
-  const comDados = ativos.map(a => {
-    const regs = mapPer[a.nome] || [];
-    const mediaPer = regs.length ? regs.reduce((s,v)=>s+v,0)/regs.length : null;
-    return {...a, mediaPer};
-  });
-
-  // Média da equipe no período
-  const comDadosArr = comDados.filter(a=>a.mediaPer!==null);
-  const mediaEq = comDadosArr.length
-    ? comDadosArr.reduce((s,a)=>s+a.mediaPer,0)/comDadosArr.length : 0;
-
-  comDados.sort((a,b)=>{
-    if(a.mediaPer!==null&&b.mediaPer!==null)return b.mediaPer-a.mediaPer;
-    if(a.mediaPer!==null)return -1;
-    if(b.mediaPer!==null)return 1;
-    return b.mediaHist-a.mediaHist;
-  });
-
-  comDados.forEach(a => {
-    const base = a.mediaPer ?? a.mediaHist;
-    const diff = mediaEq > 0 ? base - mediaEq : 0;
-    const pct  = mediaEq > 0 ? diff/mediaEq*100 : 0;
-    const semD = a.mediaPer === null;
-
-    let badge;
-    if (semD)         badge=`<span class="badge info">— Sem dados</span>`;
-    else if(pct<-20)  badge=`<span class="badge alert">🔴 Abaixo</span>`;
-    else if(pct<10)   badge=`<span class="badge warn">🟡 Na faixa</span>`;
-    else              badge=`<span class="badge ok">🟢 Acima</span>`;
-
-    const diffStr  = (diff>=0?'+':'')+diff.toFixed(1);
-    const diffClr  = diff>=0?'var(--green)':'var(--red)';
-    const mediaExib= semD
-      ? `<span style="color:var(--text3)">— <small>(hist: ${a.mediaHist.toFixed(1)})</small></span>`
-      : `${a.mediaPer.toFixed(1)} <small style="color:var(--text3)">(hist: ${a.mediaHist.toFixed(1)})</small>`;
-
-    body.innerHTML+=`<tr>
-      <td><strong>${a.nome}</strong></td>
-      <td>${mediaExib}</td>
-      <td>${semD?'—':`<span style="font-weight:700;color:${diffClr}">${diffStr}</span> <small style="color:var(--text3)">(${pct>=0?'+':''}${pct.toFixed(0)}%)</small>`}</td>
-      <td>${a.mediaTma?a.mediaTma.toFixed(0)+' min':'—'}</td>
-      <td>${a.mainSvc}</td>
-      <td>${badge}</td>
-    </tr>`;
-  });
-
-  const excl = G.atendentes.filter(a=>a.mediaHist<MIN_SENHAS);
-  document.getElementById('atend-note').innerHTML =
-    `Período: <strong>${mesStr(...(perRef.split('/')))}</strong> · `
-    +`Média da equipe: <strong>${mediaEq.toFixed(1)} senhas/dia</strong> · `
-    +`Faixa aceitável: ${(mediaEq*0.8).toFixed(1)}–${(mediaEq*1.1).toFixed(1)} senhas/dia`
-    +(excl.length?` · Excluídos (< ${MIN_SENHAS}/dia hist.): <strong>${excl.map(e=>e.nome).join(', ')}</strong>`:'');
-
-  // info já atualizada no filtro global
-}
-
-// ══════════════════════════════════════════════════════
-// RENDER HISTÓRICO vs ATUAL
-// ══════════════════════════════════════════════════════
-function renderHistorico() {
-  const body = document.getElementById('hist-body');
-  body.innerHTML = '';
-
-  const ativos = G.atendentes.filter(a=>a.mediaHist>=MIN_SENHAS);
-
-  // Mapas por período para cada atendente
-  const getMesMedia = (nome, mes) => {
-    const regs = [];
-    for (const r of G.todosRegistros) {
-      const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
-      const n=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
-      if(d===mes&&n===nome){
-        const v=parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
-        if(!isNaN(v))regs.push(v);
-      }
-    }
-    return regs.length ? regs.reduce((s,v)=>s+v,0)/regs.length : null;
-  };
-
-  ativos.sort((a,b)=>b.mediaHist-a.mediaHist).forEach(a=>{
-    const mAnt   = getMesMedia(a.nome, G.mesAnterior);
-    const mAtual = getMesMedia(a.nome, G.mesAtual);
-
-    const fmt = v => v!==null ? v.toFixed(1) : '<span style="color:var(--text3)">—</span>';
-
-    // Tendência
-    let tend = '—';
-    if (mAnt!==null && mAtual!==null) {
-      const d = mAtual - mAnt;
-      tend = d>1 ? `<span style="color:var(--green)">▲ +${d.toFixed(1)}</span>`
-           : d<-1? `<span style="color:var(--red)">▼ ${d.toFixed(1)}</span>`
-           : `<span style="color:var(--text3)">→ estável</span>`;
-    } else if (mAtual!==null) {
-      tend = '<span style="color:var(--blue)">★ novo período</span>';
-    }
-
-    body.innerHTML+=`<tr>
-      <td><strong>${a.nome}</strong></td>
-      <td>${a.mediaHist.toFixed(1)}</td>
-      <td>${fmt(mAnt)}</td>
-      <td>${fmt(mAtual)}</td>
-      <td>${tend}</td>
-    </tr>`;
-  });
-}
-
-// ══════════════════════════════════════════════════════
-// CARDS DE DIAGNÓSTICO
-// ══════════════════════════════════════════════════════
-function renderCards() {
-  const g = G;
-
-  // DEMANDA
-  document.getElementById('d-hist').textContent  = g.demandaHist.toFixed(1);
-  document.getElementById('d-atual').textContent = g.demandaAtual>0 ? g.demandaAtual.toFixed(1) : '—';
-  if (g.demandaAtual > 0) {
-    const v = verdict(g.demandaAtual, g.demandaHist, 'Demanda atual');
-    const el = document.getElementById('d-verdict');
-    el.className = 'verdict '+v.cls;
-    el.innerHTML = `${v.icon} ${v.txt}`;
-  } else {
-    document.getElementById('d-verdict').innerHTML = '— Sem dados no período';
-    document.getElementById('d-verdict').className = 'verdict info';
-  }
-
-  // CAPACIDADE POR ATENDENTE
-  const ativos = g.atendentes.filter(a=>a.mediaHist>=MIN_SENHAS);
-  const capHist = ativos.length ? ativos.reduce((s,a)=>s+a.mediaHist,0)/ativos.length : 0;
-  document.getElementById('c-hist').textContent  = capHist.toFixed(1);
-  document.getElementById('c-atual').textContent = g.mediaEquipeAtual>0 ? g.mediaEquipeAtual.toFixed(1) : '—';
-  if (g.mediaEquipeAtual > 0) {
-    const v = verdict(g.mediaEquipeAtual, capHist, 'Capacidade atual');
-    const el = document.getElementById('c-verdict');
-    el.className = 'verdict '+v.cls;
-    el.innerHTML = `${v.icon} ${v.txt}`;
-  } else {
-    document.getElementById('c-verdict').innerHTML = '— Sem dados no período';
-    document.getElementById('c-verdict').className = 'verdict info';
-  }
-
-  // EQUIPE
-  const capTotalDia = ativos.filter(a=>a.mediaAtual!==null).reduce((s,a)=>s+a.mediaAtual,0);
-  document.getElementById('e-ativos').textContent  = g.numAtivosAtual;
-  document.getElementById('e-cap-dia').textContent = capTotalDia.toFixed(0)+' senhas/dia';
-  document.getElementById('e-dem').textContent     = g.demandaAtual>0 ? g.demandaAtual.toFixed(0)+' senhas/dia*' : '—';
-
-  const eEl = document.getElementById('e-verdict');
-  if (g.demandaAtual > 0 && capTotalDia > 0) {
-    const diff = capTotalDia - g.demandaAtual;
-    const pct  = diff/g.demandaAtual*100;
-    if (pct >= 10) {
-      eEl.className='verdict ok';
-      eEl.innerHTML=`✓ Equipe com capacidade suficiente (+${pct.toFixed(0)}% acima da demanda)`;
-    } else if (pct >= 0) {
-      eEl.className='verdict warn';
-      eEl.innerHTML=`⚠ Equipe no limite — pouca margem (${pct.toFixed(0)}% acima)`;
-    } else {
-      eEl.className='verdict alert';
-      eEl.innerHTML=`✗ Capacidade abaixo da demanda (${pct.toFixed(0)}%)`;
-    }
-  } else {
-    eEl.className='verdict info';
-    eEl.innerHTML='— Aguardando dados do período';
-  }
-}
-
-// ══════════════════════════════════════════════════════
-// LOAD SHEET DATA
+// LOAD DATA
 // ══════════════════════════════════════════════════════
 async function loadData() {
-  const dot  = document.getElementById('sdot');
-  const stxt = document.getElementById('stxt');
-
+  const dot=document.getElementById('sdot');
+  const stxt=document.getElementById('stxt');
   try {
-    const resp = await fetch(API_URL, {method:'GET', redirect:'follow'});
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const rows = await resp.json();
-    if (rows.error) throw new Error(rows.error);
-    if (!Array.isArray(rows)||rows.length===0) throw new Error('Sem dados');
+    const resp=await fetch(API_URL,{method:'GET',redirect:'follow'});
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    const rows=await resp.json();
+    if(rows.error)throw new Error(rows.error);
+    if(!Array.isArray(rows)||!rows.length)throw new Error('Sem dados');
 
-    G.todosRegistros = rows;
+    G.registros=rows;
 
-    // ── Detectar períodos disponíveis ──
-    const todosMs = new Set();
-    for (const r of rows) {
+    // Detecta todos os períodos disponíveis
+    const set=new Set();
+    for(const r of rows){
       const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
-      if(d && /^\d{2}\/\d{4}$/.test(d)) todosMs.add(d);
+      if(/^\d{2}\/\d{4}$/.test(d))set.add(d);
     }
-    G.periodos = Array.from(todosMs).sort();
+    // Ordena decrescente (mais recente primeiro)
+    G.periodos=[...set].sort((a,b)=>{
+      const [ma,ya]=a.split('/').map(Number);
+      const [mb,yb]=b.split('/').map(Number);
+      return (yb*12+mb)-(ya*12+ma);
+    });
 
-    // Período atual e anterior baseado na data real
-    const now     = new Date();
-    const mm      = String(now.getMonth()+1).padStart(2,'0');
-    const yyyy    = now.getFullYear();
-    const mmAnt   = now.getMonth()===0?'12':String(now.getMonth()).padStart(2,'0');
-    const yyyyAnt = now.getMonth()===0?now.getFullYear()-1:now.getFullYear();
-    G.mesAtual    = `${mm}/${yyyy}`;
-    G.mesAnterior = `${mmAnt}/${yyyyAnt}`;
+    if(!G.periodos.length)throw new Error('Nenhum período encontrado nos dados');
 
-    // Usa mês atual se tiver dados, senão anterior
-    G.mesRef = todosMs.has(G.mesAtual) ? G.mesAtual : G.mesAnterior;
+    // Referência padrão = MÊS ANTERIOR ao mais recente disponível
+    const maisRecente = G.periodos[0];
+    G.mesRef = G.periodos[1] || maisRecente; // usa o segundo mais recente (= mês anterior)
 
-    // Atualiza badge
-    document.getElementById('badge-periodo').textContent =
-      `Referência: ${mesStr(...(G.mesRef.split('/')))}`;
-
-    // ── Popula filtro de período global ──
-    const gsel = document.getElementById('gfil-periodo');
-    gsel.innerHTML = '';
-    G.periodos.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = mesStr(...p.split('/'));
-      opt.selected = (p === G.mesRef);
-      gsel.appendChild(opt);
+    // Popula select
+    const sel=document.getElementById('gfil-periodo');
+    sel.innerHTML='';
+    G.periodos.forEach(p=>{
+      const opt=document.createElement('option');
+      opt.value=p;
+      opt.textContent=mesLabel(p);
+      opt.selected=(p===G.mesRef);
+      sel.appendChild(opt);
     });
     atualizaInfoFiltro();
 
-    // ── Agrupa histórico por atendente ──
-    const svcMap = {
-      entrada:  ['entrada título','entrada titulo','entrada'],
-      retirada: ['retirada título','retirada titulo','retirada'],
-      certidao: ['certidão','certidao'],
-      pref:     ['preferencial'],
-      prior:    ['prioritário','prioritario'],
-    };
-    const svcNames = {entrada:'Entrada de Título',retirada:'Retirada',certidao:'Certidão',pref:'Preferencial',prior:'Prioritário'};
+    // Badge
+    document.getElementById('badge-periodo').textContent='Referência: '+mesLabel(G.mesRef);
 
-    const mapH = {};
-    for (const r of rows) {
-      const nome=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
-      if(!nome)continue;
-      if(!mapH[nome])mapH[nome]={nome,regs:[],tmas:[],svcs:{entrada:0,retirada:0,certidao:0,pref:0,prior:0}};
-      const md=parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
-      if(!isNaN(md))mapH[nome].regs.push(md);
-      const tma=parseTime(getVal(r,['média tempo aten','media tempo aten','tma','tempo médio','tempo medio']));
-      if(tma)mapH[nome].tmas.push(tma);
-      Object.entries(svcMap).forEach(([k,cands])=>{
-        const v=parseNum(getVal(r,cands));
-        if(!isNaN(v))mapH[nome].svcs[k]+=v;
-      });
-    }
+    // Calcula e renderiza
+    calcPeriodo();
+    renderAll();
+    buildHoraTable();
 
-    // ── Agrupa período de referência ──
-    const mapRef = {};
-    for (const r of rows) {
-      const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
-      if(d!==G.mesRef)continue;
-      const nome=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
-      if(!nome)continue;
-      if(!mapRef[nome])mapRef[nome]=[];
-      const md=parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
-      if(!isNaN(md))mapRef[nome].push(md);
-    }
-
-    // ── Monta atendentes ──
-    G.atendentes = Object.values(mapH).map(a=>{
-      const mediaHist = a.regs.length ? a.regs.reduce((s,v)=>s+v,0)/a.regs.length : 0;
-      const mediaTma  = a.tmas.length ? a.tmas.reduce((s,v)=>s+v,0)/a.tmas.length : null;
-      const svcs=a.svcs, tot=Object.values(svcs).reduce((s,v)=>s+v,0);
-      const main=tot>0?Object.entries(svcs).sort((a,b)=>b[1]-a[1])[0][0]:null;
-      const refsAtual=mapRef[a.nome]||[];
-      const mediaAtual=refsAtual.length?refsAtual.reduce((s,v)=>s+v,0)/refsAtual.length:null;
-      return {nome:a.nome, mediaHist, mediaTma, mainSvc:main?svcNames[main]:'—', mediaAtual};
-    });
-
-    // ── Métricas globais ──
-    const ativos      = G.atendentes.filter(a=>a.mediaHist>=MIN_SENHAS);
-    const ativosComRef= ativos.filter(a=>a.mediaAtual!==null);
-
-    G.numAtivosAtual    = ativosComRef.length;
-    G.mediaEquipeAtual  = ativosComRef.length ? ativosComRef.reduce((s,a)=>s+a.mediaAtual,0)/ativosComRef.length : 0;
-
-    // Demanda histórica = soma de todas as médias diárias / total de registros únicos por dia
-    // Simplificado: média de todas as linhas de média diária total
-    const todasMedsDia = rows.map(r=>parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']))).filter(v=>!isNaN(v));
-    // Demanda = soma de TODOS os atendentes num dia típico
-    // Mas temos 1 linha por atendente por mês → demanda/dia = soma das médias dos atendentes
-    const histAtivos = ativos.map(a=>a.mediaHist);
-    G.demandaHist = histAtivos.reduce((s,v)=>s+v, 0); // total senhas/dia equipe histórica
-
-    const refAtivos = ativosComRef.map(a=>a.mediaAtual);
-    G.demandaAtual  = refAtivos.reduce((s,v)=>s+v, 0);
-
-    // Status bar
-    dot.className = 'sdot';
-    stxt.textContent = `Dados carregados · Referência: ${mesStr(...G.mesRef.split('/'))} · ${rows.length} registros`;
-
-    // Renderiza tudo
-    renderCards();
-    renderAtendentes();
-    renderHistorico();
-    updateErlang(TMA_PADRAO);
+    dot.className='sdot';
+    stxt.textContent=`Dados carregados · ${rows.length} registros · ${G.periodos.length} períodos disponíveis`;
 
   } catch(err) {
-    dot.className = 'sdot err';
-    stxt.textContent = `Erro: ${err.message}`;
+    dot.className='sdot err';
+    stxt.textContent='Erro: '+err.message;
     console.error(err);
     updateErlang(TMA_PADRAO);
   }
-
-  document.getElementById('lov').style.display = 'none';
-}
-
-// ══════════════════════════════════════════════════════
-// FILTRO GLOBAL DE PERÍODO
-// ══════════════════════════════════════════════════════
-function onPeriodoChange(val) {
-  G.mesRef = val;
-  document.getElementById('badge-periodo').textContent = 'Referência: ' + mesStr(...val.split('/'));
-  atualizaInfoFiltro();
-  recalcPeriodoAtual();
-  renderCards();
-  renderAtendentes();
-  renderHistorico();
-  updateErlang(parseInt(document.getElementById('tma-sl').value));
-}
-
-function navPeriodo(dir) {
-  const idx = G.periodos.indexOf(G.mesRef);
-  const novo = G.periodos[idx + dir];
-  if (!novo) return;
-  document.getElementById('gfil-periodo').value = novo;
-  onPeriodoChange(novo);
-}
-
-function atualizaInfoFiltro() {
-  const idx = G.periodos.indexOf(G.mesRef);
-  document.getElementById('gfil-info').textContent =
-    `${idx + 1} de ${G.periodos.length} períodos disponíveis`;
-}
-
-function recalcPeriodoAtual() {
-  // Recalcula mapRef e atendentes.mediaAtual para o novo período
-  const mapRef = {};
-  for (const r of G.todosRegistros) {
-    const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
-    if(d!==G.mesRef)continue;
-    const nome=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
-    if(!nome)continue;
-    if(!mapRef[nome])mapRef[nome]=[];
-    const md=parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
-    if(!isNaN(md))mapRef[nome].push(md);
-  }
-  G.atendentes.forEach(a => {
-    const regs = mapRef[a.nome] || [];
-    a.mediaAtual = regs.length ? regs.reduce((s,v)=>s+v,0)/regs.length : null;
-  });
-  const ativos       = G.atendentes.filter(a=>a.mediaHist>=MIN_SENHAS);
-  const ativosComRef = ativos.filter(a=>a.mediaAtual!==null);
-  G.numAtivosAtual   = ativosComRef.length;
-  G.mediaEquipeAtual = ativosComRef.length ? ativosComRef.reduce((s,a)=>s+a.mediaAtual,0)/ativosComRef.length : 0;
-  G.demandaAtual     = ativosComRef.reduce((s,a)=>s+a.mediaAtual,0);
+  document.getElementById('lov').style.display='none';
 }
 
 // ══════════════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════════════
-buildHoraTable();
+document.getElementById('tma-sl').value=TMA_PADRAO;
 updateErlang(TMA_PADRAO);
-document.getElementById('tma-sl').value = TMA_PADRAO;
 loadData();
 </script>
 </body>
