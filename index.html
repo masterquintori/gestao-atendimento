@@ -108,6 +108,14 @@ tr:hover td{background:#faf9f7}
 .spin{width:30px;height:30px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:pulse2 .7s linear infinite}
 @keyframes pulse2{to{transform:rotate(360deg)}}
 
+
+/* PERIOD FILTER GLOBAL */
+.periodo-bar{display:flex;align-items:center;gap:10px;background:var(--surface);border:.5px solid var(--border);border-radius:var(--r);padding:10px 16px;margin-bottom:1.25rem;flex-wrap:wrap}
+.periodo-bar label{font-size:13px;font-weight:600;color:var(--text2)}
+.periodo-bar select{font-size:13px;font-weight:600;padding:5px 12px;border-radius:6px;border:.5px solid var(--blue);background:var(--blue-lt);color:var(--blue);cursor:pointer}
+.periodo-bar .pbtn{font-size:12px;padding:5px 12px;border-radius:6px;border:.5px solid var(--border);background:var(--s2);color:var(--text2);cursor:pointer;white-space:nowrap}
+.periodo-bar .pbtn:hover{background:var(--border)}
+.periodo-bar .pinfo{font-size:12px;color:var(--text3);margin-left:auto}
 @media(max-width:600px){.answer-grid{grid-template-columns:1fr}.wrap{padding:1rem .75rem 3rem}}
 </style>
 </head>
@@ -125,6 +133,15 @@ tr:hover td{background:#faf9f7}
   </div>
 
   <div class="sbar"><div class="sdot load" id="sdot"></div><span id="stxt">Conectando…</span></div>
+
+  <!-- ══ FILTRO DE PERÍODO GLOBAL ══ -->
+  <div class="periodo-bar">
+    <label>📅 Período de análise:</label>
+    <select id="gfil-periodo" onchange="onPeriodoChange(this.value)"></select>
+    <button class="pbtn" onclick="navPeriodo(-1)">◀ Anterior</button>
+    <button class="pbtn" onclick="navPeriodo(+1)">Próximo ▶</button>
+    <span class="pinfo" id="gfil-info">—</span>
+  </div>
 
   <!-- ══ RESPOSTAS DIRETAS ══ -->
   <p class="stitle">Diagnóstico rápido</p>
@@ -192,11 +209,7 @@ tr:hover td{background:#faf9f7}
 
   <!-- PAINEL: ATENDENTES -->
   <div id="atend" class="panel active">
-    <div class="filter-row">
-      <label>Período:</label>
-      <select id="fil-periodo" onchange="renderAtendentes()"><option value="">Todos</option></select>
-      <span id="fil-info" style="font-size:12px;color:var(--text3)"></span>
-    </div>
+
     <div class="tbl-wrap">
       <table>
         <thead><tr>
@@ -426,12 +439,12 @@ function buildHoraTable() {
 // RENDER ATENDENTES (com filtro de período)
 // ══════════════════════════════════════════════════════
 function renderAtendentes() {
-  const periodo = document.getElementById('fil-periodo').value;
+  const periodo = G.mesRef;  // usa período global
   const body    = document.getElementById('atend-body');
   body.innerHTML = '';
 
   // Filtra registros pelo período selecionado (ou usa mesRef se vazio)
-  const perRef = periodo || G.mesRef;
+  const perRef = periodo;
 
   // Recalcula médias por atendente no período selecionado
   const mapPer = {};
@@ -502,8 +515,7 @@ function renderAtendentes() {
     +`Faixa aceitável: ${(mediaEq*0.8).toFixed(1)}–${(mediaEq*1.1).toFixed(1)} senhas/dia`
     +(excl.length?` · Excluídos (< ${MIN_SENHAS}/dia hist.): <strong>${excl.map(e=>e.nome).join(', ')}</strong>`:'');
 
-  document.getElementById('fil-info').textContent =
-    `${comDadosArr.length} de ${ativos.length} atendentes com dados no período`;
+  // info já atualizada no filtro global
 }
 
 // ══════════════════════════════════════════════════════
@@ -656,16 +668,17 @@ async function loadData() {
     document.getElementById('badge-periodo').textContent =
       `Referência: ${mesStr(...(G.mesRef.split('/')))}`;
 
-    // ── Popula filtro de períodos ──
-    const sel = document.getElementById('fil-periodo');
-    sel.innerHTML = '';
+    // ── Popula filtro de período global ──
+    const gsel = document.getElementById('gfil-periodo');
+    gsel.innerHTML = '';
     G.periodos.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p;
       opt.textContent = mesStr(...p.split('/'));
       opt.selected = (p === G.mesRef);
-      sel.appendChild(opt);
+      gsel.appendChild(opt);
     });
+    atualizaInfoFiltro();
 
     // ── Agrupa histórico por atendente ──
     const svcMap = {
@@ -751,6 +764,57 @@ async function loadData() {
   }
 
   document.getElementById('lov').style.display = 'none';
+}
+
+// ══════════════════════════════════════════════════════
+// FILTRO GLOBAL DE PERÍODO
+// ══════════════════════════════════════════════════════
+function onPeriodoChange(val) {
+  G.mesRef = val;
+  document.getElementById('badge-periodo').textContent = 'Referência: ' + mesStr(...val.split('/'));
+  atualizaInfoFiltro();
+  recalcPeriodoAtual();
+  renderCards();
+  renderAtendentes();
+  renderHistorico();
+  updateErlang(parseInt(document.getElementById('tma-sl').value));
+}
+
+function navPeriodo(dir) {
+  const idx = G.periodos.indexOf(G.mesRef);
+  const novo = G.periodos[idx + dir];
+  if (!novo) return;
+  document.getElementById('gfil-periodo').value = novo;
+  onPeriodoChange(novo);
+}
+
+function atualizaInfoFiltro() {
+  const idx = G.periodos.indexOf(G.mesRef);
+  document.getElementById('gfil-info').textContent =
+    `${idx + 1} de ${G.periodos.length} períodos disponíveis`;
+}
+
+function recalcPeriodoAtual() {
+  // Recalcula mapRef e atendentes.mediaAtual para o novo período
+  const mapRef = {};
+  for (const r of G.todosRegistros) {
+    const d=(getVal(r,['data','mês','mes'])||'').toString().trim();
+    if(d!==G.mesRef)continue;
+    const nome=(getVal(r,['colaborador','atendente','nome'])||'').toString().trim();
+    if(!nome)continue;
+    if(!mapRef[nome])mapRef[nome]=[];
+    const md=parseNum(getVal(r,['média diária senhas','media diaria senhas','media diaria','média diária']));
+    if(!isNaN(md))mapRef[nome].push(md);
+  }
+  G.atendentes.forEach(a => {
+    const regs = mapRef[a.nome] || [];
+    a.mediaAtual = regs.length ? regs.reduce((s,v)=>s+v,0)/regs.length : null;
+  });
+  const ativos       = G.atendentes.filter(a=>a.mediaHist>=MIN_SENHAS);
+  const ativosComRef = ativos.filter(a=>a.mediaAtual!==null);
+  G.numAtivosAtual   = ativosComRef.length;
+  G.mediaEquipeAtual = ativosComRef.length ? ativosComRef.reduce((s,a)=>s+a.mediaAtual,0)/ativosComRef.length : 0;
+  G.demandaAtual     = ativosComRef.reduce((s,a)=>s+a.mediaAtual,0);
 }
 
 // ══════════════════════════════════════════════════════
